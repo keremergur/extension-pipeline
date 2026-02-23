@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mock Server Test Page</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+        }
+        h1, h2 {
+            color: #4ec9b0;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #404040;
+            border-radius: 5px;
+            background-color: #252526;
+        }
+        button {
+            padding: 10px 15px;
+            margin: 5px;
+            background-color: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background-color: #1177bb;
+        }
+        button:active {
+            background-color: #005a9e;
+        }
+        .output {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #1e1e1e;
+            border: 1px solid #404040;
+            border-radius: 3px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+        .success { color: #4ec9b0; }
+        .error { color: #f48771; }
+        .info { color: #569cd6; }
+        input, textarea {
+            padding: 8px;
+            margin: 5px 0;
+            background-color: #3c3c3c;
+            color: #d4d4d4;
+            border: 1px solid #404040;
+            border-radius: 3px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .inline-input {
+            display: inline-block;
+            width: auto;
+            min-width: 300px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Mock Server Test Page</h1>
+    <p>Test HTTP and WebSocket endpoints manually from your browser.</p>
+
+    <!-- HTTP Tests -->
+    <div class="section">
+        <h2>1. HTTP Endpoints</h2>
+
+        <button onclick="testHealth()">GET /health</button>
+        <button onclick="testReset()">POST /api/reset</button>
+        <button onclick="testStatus()">GET /api/status</button>
+        <br>
+        <button onclick="testApiDataGET()">GET /api/data</button>
+        <button onclick="testApiDataPOST()">POST /api/data</button>
+        <button onclick="testApiFile()">GET /api/file (download)</button>
+
+        <div id="http-output" class="output">
+            <span class="info">Click buttons above to test HTTP endpoints...</span>
+        </div>
+    </div>
+
+    <!-- WebSocket Tests -->
+    <div class="section">
+        <h2>2. WebSocket Connection (ws://)</h2>
+
+        <div>
+            <label>WebSocket URL:</label>
+            <input type="text" id="ws-url" value="ws://127.0.0.1:3001" class="inline-input" readonly style="background-color: #2d2d2d;">
+            <button onclick="connectWebSocket()">Connect</button>
+            <button onclick="disconnectWebSocket()">Disconnect</button>
+        </div>
+        <div style="margin-top: 5px; font-size: 12px; color: #858585;">
+            💡 Note: Testing with <code>ws://</code> (plain WebSocket). Extensions use <code>wss://</code> (Port 3002) which is tested automatically by the verifier.
+        </div>
+
+        <div style="margin-top: 10px;">
+            <button onclick="sendTestMessage()">Send Test JSON Message</button>
+            <button onclick="sendTextMessage()">Send Plain Text Message</button>
+        </div>
+
+        <div style="margin-top: 10px;">
+            <label>Custom Message (JSON):</label>
+            <textarea id="custom-message" rows="3">{"type": "custom", "data": "test"}</textarea>
+            <button onclick="sendCustomMessage()">Send Custom Message</button>
+        </div>
+
+        <div id="ws-output" class="output">
+            <span class="info">WebSocket not connected. Click 'Connect' to start.</span>
+        </div>
+    </div>
+
+    <script>
+        const HTTP_BASE = 'http://127.0.0.1:3000';
+        let websocket = null;
+
+        // Utility functions
+        function log(elementId, message, type = 'info') {
+            const output = document.getElementById(elementId);
+            const timestamp = new Date().toLocaleTimeString();
+            const className = type;
+            output.innerHTML += `<div class="${className}">[${timestamp}] ${message}</div>`;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function clearLog(elementId) {
+            document.getElementById(elementId).innerHTML = '';
+        }
+
+        // HTTP Tests
+        async function testHealth() {
+            clearLog('http-output');
+            try {
+                const response = await fetch(`${HTTP_BASE}/health`);
+                const data = await response.json();
+                log('http-output', `GET /health → ${response.status}`, 'success');
+                log('http-output', `Response: ${JSON.stringify(data)}`, 'info');
+            } catch (error) {
+                log('http-output', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testReset() {
+            clearLog('http-output');
+            try {
+                const response = await fetch(`${HTTP_BASE}/api/reset`, { method: 'POST' });
+                const data = await response.json();
+                log('http-output', `POST /api/reset → ${response.status}`, 'success');
+                log('http-output', `Response: ${JSON.stringify(data)}`, 'info');
+            } catch (error) {
+                log('http-output', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testStatus() {
+            clearLog('http-output');
+            try {
+                const response = await fetch(`${HTTP_BASE}/api/status`);
+                const data = await response.json();
+                log('http-output', `GET /api/status → ${response.status}`, 'success');
+                log('http-output', `Response: ${JSON.stringify(data, null, 2)}`, 'info');
+            } catch (error) {
+                log('http-output', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testApiDataGET() {
+            clearLog('http-output');
+            try {
+                const response = await fetch(`${HTTP_BASE}/api/data`);
+                const data = await response.json();
+                log('http-output', `GET /api/data → ${response.status}`, 'success');
+                log('http-output', `Response: ${JSON.stringify(data)}`, 'info');
+            } catch (error) {
+                log('http-output', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testApiDataPOST() {
+            clearLog('http-output');
+            try {
+                const response = await fetch(`${HTTP_BASE}/api/data`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ test: 'payload' })
+                });
+                const data = await response.json();
+                log('http-output', `POST /api/data → ${response.status}`, 'success');
+                log('http-output', `Response: ${JSON.stringify(data)}`, 'info');
+            } catch (error) {
+                log('http-output', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testApiFile() {
+            clearLog('http-output');
+            try {
+                const response = await fetch(`${HTTP_BASE}/api/file`);
+                const blob = await response.blob();
+                log('http-output', `GET /api/file → ${response.status}`, 'success');
+                log('http-output', `Content-Type: ${response.headers.get('Content-Type')}`, 'info');
+                log('http-output', `File size: ${blob.size} bytes`, 'info');
+
+                // Trigger download
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'exploit.txt';
+                a.click();
+                window.URL.revokeObjectURL(url);
+                log('http-output', `File download triggered!`, 'success');
+            } catch (error) {
+                log('http-output', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        // WebSocket Tests
+        function connectWebSocket() {
+            const url = document.getElementById('ws-url').value;
+            clearLog('ws-output');
+
+            try {
+                log('ws-output', `Connecting to ${url}...`, 'info');
+                websocket = new WebSocket(url);
+
+                websocket.onopen = () => {
+                    log('ws-output', `✓ Connected successfully!`, 'success');
+                };
+
+                websocket.onmessage = (event) => {
+                    log('ws-output', `Received: ${event.data}`, 'success');
+                };
+
+                websocket.onerror = (error) => {
+                    log('ws-output', `✗ WebSocket error occurred`, 'error');
+                    console.error('WebSocket error:', error);
+                };
+
+                websocket.onclose = (event) => {
+                    log('ws-output', `Connection closed (code: ${event.code})`, 'info');
+                };
+            } catch (error) {
+                log('ws-output', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        function disconnectWebSocket() {
+            if (websocket) {
+                websocket.close();
+                log('ws-output', `Disconnecting...`, 'info');
+            } else {
+                log('ws-output', `Not connected`, 'error');
+            }
+        }
+
+        function sendMessage(message) {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                const msgStr = JSON.stringify(message);
+                websocket.send(msgStr);
+                log('ws-output', `Sent: ${msgStr}`, 'info');
+            } else {
+                log('ws-output', `Not connected. Click 'Connect' first.`, 'error');
+            }
+        }
+
+        function sendRawMessage(message) {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(message);
+                log('ws-output', `Sent: ${message}`, 'info');
+            } else {
+                log('ws-output', `Not connected. Click 'Connect' first.`, 'error');
+            }
+        }
+
+        function sendTestMessage() {
+            sendMessage({ test: 'payload', value: 123, timestamp: Date.now() });
+        }
+
+        function sendTextMessage() {
+            sendRawMessage('Hello WebSocket Server!');
+        }
+
+        function sendCustomMessage() {
+            try {
+                const customMsg = document.getElementById('custom-message').value;
+                const parsed = JSON.parse(customMsg);
+                sendMessage(parsed);
+            } catch (error) {
+                log('ws-output', `Invalid JSON: ${error.message}`, 'error');
+            }
+        }
+    </script>
+</body>
+</html>
