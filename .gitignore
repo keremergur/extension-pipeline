@@ -1,0 +1,16 @@
+
+src/datasets/
+src/extension_code/
+src/codeql_reports/
+src/results_analysis/
+src/results_analysis_bkp/
+src/results_verification/
+src/codeql_agent/
+__pycache__
+.env
+
+*.swp
+verifier_extensions/
+extension_code_bkp/
+
+env/

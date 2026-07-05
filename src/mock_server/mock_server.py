@@ -11,12 +11,20 @@ from threading import Thread, Lock
 import time
 from pathlib import Path
 import io
+import os
 import json
 import uuid
 import logging
 
 # Disable Flask/Werkzeug request logging
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
+
+# Default bind address for the mock server. Kept in sync with config.MOCK_SERVER_HOST/
+# MOCK_SERVER_PORT via the same env vars so a single setting drives both this server
+# and the verifier's page URL. Read from the env directly (rather than importing
+# config) so this module still works when run standalone (`python mock_server.py`).
+DEFAULT_HOST = os.getenv("MOCK_SERVER_HOST", "127.0.0.1")
+DEFAULT_PORT = int(os.getenv("MOCK_SERVER_PORT", "3000"))
 
 app = Flask(__name__)
 
@@ -114,6 +122,22 @@ def api_file():
     )
 
 
+@app.route('/')
+def index():
+    """Minimal victim page served in local verification mode.
+
+    Replaces the real example.com so the browser has a same-origin local page to
+    navigate to. Only used when USE_LOCAL_VERIFICATION_SERVER is enabled; harmless
+    otherwise.
+    """
+    return Response(
+        "<!DOCTYPE html><html><head><title>Verification</title></head>"
+        "<body><h1>Verification page</h1></body></html>",
+        mimetype="text/html",
+        status=200,
+    )
+
+
 @app.route('/health')
 def health():
     """Health check endpoint."""
@@ -190,7 +214,7 @@ def get_status():
 class MockServer:
     """Manages the mock HTTP server lifecycle."""
 
-    def __init__(self, host: str = "127.0.0.1", http_port: int = 3000):
+    def __init__(self, host: str = DEFAULT_HOST, http_port: int = DEFAULT_PORT):
         self.host = host
         self.http_port = http_port
         self.http_thread = None
@@ -309,12 +333,12 @@ class MockServer:
 # Singleton instance
 _server_instance = None
 
-def get_mock_server(host: str = "127.0.0.1", http_port: int = 3000) -> MockServer:
+def get_mock_server(host: str = DEFAULT_HOST, http_port: int = DEFAULT_PORT) -> MockServer:
     """Get or create the mock server instance.
 
     Args:
-        host: Host to bind to (default: 127.0.0.1)
-        http_port: Port for HTTP server (default: 3000)
+        host: Host to bind to (default: MOCK_SERVER_HOST env or 127.0.0.1)
+        http_port: Port for HTTP server (default: MOCK_SERVER_PORT env or 3000)
     """
     global _server_instance
     if _server_instance is None:

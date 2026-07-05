@@ -1,0 +1,9 @@
+.git
+.idea
+**/__pycache__
+**/*.pyc
+.env
+src/.env
+src/datasets
+src/results_analysis
+src/results_verification
