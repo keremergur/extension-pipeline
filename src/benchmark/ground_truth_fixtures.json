@@ -1,0 +1,65 @@
+{
+  "_comment": "Self-contained fixture suite for the verifier (Phase 0). These are TEST DOUBLES committed under fixtures/ — NOT real Chrome Web Store extensions — so the suite runs fully offline with no dataset/SSH/LLM. Two are genuinely vulnerable (must verify), two are benign controls (must NOT verify). Run with: python run_benchmark.py --fixtures  (requires a working CHROME_BINARY_PATH — Chrome-for-Testing ~126 on kuria, or a Playwright-bundled Chromium locally).",
+  "entries": [
+    {
+      "extension_id": "vuln_1way_request",
+      "is_control": false,
+      "note": "Extension relays an attacker-controlled URL into a privileged fetch tagged with runtime.id.",
+      "vulnerabilities": [
+        {
+          "rule_id": "fixture_1way",
+          "vulnerability_category": "1way_request",
+          "attacker_source": "Website",
+          "attacker_payload": "window.postMessage({__fixture: 'fetch', url: 'http://127.0.0.1:3000/api/data'}, '*');",
+          "verification_details": {},
+          "expected": "verified"
+        }
+      ]
+    },
+    {
+      "extension_id": "vuln_code_execution",
+      "is_control": false,
+      "note": "Extension runs an attacker-named privileged command with an attacker-supplied argument.",
+      "vulnerabilities": [
+        {
+          "rule_id": "fixture_codeexec",
+          "vulnerability_category": "code_execution",
+          "attacker_source": "Website",
+          "attacker_payload": "window.postMessage({__fixture: 'exec', cmd: 'report', arg: 'http://127.0.0.1:3000/api/data'}, '*');",
+          "verification_details": {},
+          "expected": "verified"
+        }
+      ]
+    },
+    {
+      "extension_id": "benign_validates",
+      "is_control": true,
+      "note": "Control: receives the identical attack but allow-lists its own API host and refuses.",
+      "vulnerabilities": [
+        {
+          "rule_id": "fixture_benign_validates",
+          "vulnerability_category": "1way_request",
+          "attacker_source": "Website",
+          "attacker_payload": "window.postMessage({__fixture: 'fetch', url: 'http://127.0.0.1:3000/api/data'}, '*');",
+          "verification_details": {},
+          "expected": "not_verified"
+        }
+      ]
+    },
+    {
+      "extension_id": "benign_inert",
+      "is_control": true,
+      "note": "Control: no web-message bridge, does nothing privileged.",
+      "vulnerabilities": [
+        {
+          "rule_id": "fixture_benign_inert",
+          "vulnerability_category": "1way_request",
+          "attacker_source": "Website",
+          "attacker_payload": "window.postMessage({__fixture: 'fetch', url: 'http://127.0.0.1:3000/api/data'}, '*');",
+          "verification_details": {},
+          "expected": "not_verified"
+        }
+      ]
+    }
+  ]
+}

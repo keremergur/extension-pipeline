@@ -14,3 +14,22 @@ verifier_extensions/
 extension_code_bkp/
 
 env/
+
+# Internal planning / assistant-generated notes — not part of the deliverable
+PLAN.md
+CHANGELOG.md
+SERVER_SETUP.md
+METHODOLOGY.md
+review_pack_local.txt
+CLAUDE.md
+.claude/*
+!.claude/skills/
+!.claude/skills/**
+scratchpad/
+*.local.md
+
+# Benchmark run output (regenerated per run)
+src/benchmark/benchmark_result.json
+
+# Reference material (large binary, not source)
+src/Zacharias.pdf

@@ -1,8 +1,38 @@
+import os
 import shutil
+import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from .logging_utils import log_error, log_success
 from .paths import VERIFIER_EXTENSIONS_DIR
+
+
+def _verifier_output_dir() -> Path:
+    """Pick the first writable directory for the payload-injected verifier extensions.
+
+    The ``_original`` template ships in the source tree and is only read, but each run must
+    *write* a payload-injected copy. The source tree is root-owned (and unwritable by the
+    unprivileged runtime user) under Docker, so writing the copy there made every
+    Extension-mode vulnerability fail as ``verifier_prep_failed``. Mirrors
+    ``domain_spoofing._default_cert_dir``. A container-local temp dir is preferred over
+    ``RESULTS_VERIFICATION_DIR`` because that base is a volume shared by all parallel
+    containers — writing per-extension dirs there would race across workers.
+    """
+    candidates: List[Path] = []
+    override = os.getenv("VERIFIER_EXTENSIONS_OUT_DIR")
+    if override:
+        candidates.append(Path(override))
+    candidates.append(Path(tempfile.gettempdir()) / "verifier_extensions")
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            probe = cand / ".write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+            return cand
+        except Exception:
+            continue
+    return Path(tempfile.gettempdir()) / "verifier_extensions"
 
 
 def prepare_verifier_extension(extension_id: str, payload: str) -> Optional[Path]:
@@ -13,8 +43,9 @@ def prepare_verifier_extension(extension_id: str, payload: str) -> Optional[Path
             log_error(f"Verifier extension template not found: {verifier_template}")
             return None
 
-        # Create directory for this specific verification
-        verifier_dir = VERIFIER_EXTENSIONS_DIR / f"{extension_id}_verifier"
+        # Create directory for this specific verification (in a writable location — the
+        # source-tree template dir is read-only under Docker).
+        verifier_dir = _verifier_output_dir() / f"{extension_id}_verifier"
 
         # Remove old version if exists
         if verifier_dir.exists():

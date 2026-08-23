@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Fixture - Benign (validates input)",
+  "version": "1.0",
+  "description": "TEST DOUBLE control. Receives the SAME attacker message as the vulnerable fixtures, but the background allow-lists its own API host and refuses attacker-controlled URLs => no request leaves the extension context => MUST NOT verify. Precision control.",
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_start" }
+  ]
+}

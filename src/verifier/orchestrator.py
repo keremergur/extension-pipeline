@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from .extension_code import get_extension_code_dir, validate_extension_structure
 from .manifest import (
     has_background_context, has_fixed_extension_id,
     modify_manifest_for_verification, prepare_extension_storage_verification,
+    pin_extension_id,
 )
 from .extension_id import (
     payload_mentions_extension_id,
@@ -21,12 +23,14 @@ from .extension_id import (
 )
 from .verifier_extension import prepare_verifier_extension
 from .seeding import seed_test_data
-from .detection import wait_for_detection, execute_payload_and_detect
+from .detection import wait_for_detection, execute_payload_and_detect, derive_failure_reason
 from .storage_checks import check_storage_modified
 from .timing import timer
+from .debugging import capture_failure_artifacts
+from domain_spoofing import spoof_target
 
 
-async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: Path, vuln: dict, p, debug_mode: bool = False) -> Dict:
+async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: Path, vuln: dict, p, debug_mode: bool = False, pinned_extension_id: str = None) -> Dict:
     """Verify a single extension-mode vulnerability using verifier extension.
 
     Two-browser approach:
@@ -42,6 +46,12 @@ async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: 
 
     payload = vuln.get('attacker_payload')
     rule_id = vuln.get('rule_id')
+
+    # Resolve navigation target + domain-spoofing launch args (no-op unless spoofing is enabled).
+    nav_url, spoof_args = spoof_target(vuln, config)
+    # Always record the resolved target so every result JSON is self-explanatory offline.
+    vuln_record["nav_url"] = nav_url
+    vuln_record["spoofing_applied"] = bool(spoof_args)
 
     if not payload:
         vuln_record["verification_status"] = "missing_payload"
@@ -61,8 +71,15 @@ async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: 
         # Step 1: Determine target extension ID
         target_extension_id = None
 
+        # Content-script-only extension whose ID we pinned: use the known ID directly (discovery is
+        # impossible for it, and the pinned manifest 'key' makes the runtime ID deterministic).
+        if pinned_extension_id:
+            target_extension_id = pinned_extension_id
+            if debug_mode:
+                log_step(2, "Extension ID determination")
+                log_success(f"Using pinned content-script-only extension ID: {target_extension_id}")
         # Check if extension has a fixed ID (via 'key' in manifest.json)
-        if has_fixed_extension_id(extension_dir):
+        elif has_fixed_extension_id(extension_dir):
             # Extension has 'key' → ID is deterministic and matches the .crx filename
             target_extension_id = extension_id
             if debug_mode:
@@ -182,7 +199,7 @@ async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: 
         if debug_mode:
             log_step(4, "Launching browser with target + verifier extensions")
 
-        context, extension_mode_user_data_dir = await launch_browser_with_extension(extension_dir, p, verifier_dir)
+        context, extension_mode_user_data_dir = await launch_browser_with_extension(extension_dir, p, verifier_dir, extra_args=spoof_args)
 
         if not context:
             vuln_record["verification_status"] = "browser_launch_failed"
@@ -239,6 +256,7 @@ async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: 
             if debug_mode:
                 log_step(5, f"Testing: {rule_id}")
 
+            diagnostics = {}
             detection_task = asyncio.create_task(
                 wait_for_detection(
                     page,
@@ -247,16 +265,18 @@ async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: 
                     timeout_s=config.PAYLOAD_EXECUTION_TIMEOUT,
                     mock_server=mock_server,
                     verification_token=verification_token,
-                    extension_id=extension_id,
-                    extension_path=str(extension_dir)
+                    extension_id=target_extension_id,
+                    extension_path=str(extension_dir),
+                    diagnostics=diagnostics
                 )
             )
 
             # Load page - this triggers DOMContentLoaded and executes payload with active listeners
             try:
-                # Use HTTP (not HTTPS) to avoid mixed content blocking
+                # Default nav is the configured verification page; with domain spoofing on, nav_url is
+                # the real restricted origin over HTTPS.
                 async with timer.step("page_navigation", "PAGE_NAVIGATION_TIMEOUT"):
-                    await page.goto(config.VERIFICATION_PAGE_URL, timeout=int(config.PAGE_NAVIGATION_TIMEOUT * 1000), wait_until="domcontentloaded")
+                    await page.goto(nav_url, timeout=int(config.PAGE_NAVIGATION_TIMEOUT * 1000), wait_until="domcontentloaded")
             except Exception as nav_error:
                 log_step_failed("load page", str(nav_error))
                 detection_task.cancel()
@@ -280,18 +300,33 @@ async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: 
                 storage_domain = verification_details.get('storage_domain') if verification_details else None
 
                 if storage_api:
-                    storage_modified = await check_storage_modified(page, storage_api, storage_key, extension_id=target_extension_id, storage_domain=storage_domain, extension_path=str(extension_dir))
+                    storage_modified = await check_storage_modified(page, storage_api, storage_key, extension_id=target_extension_id, storage_domain=storage_domain, extension_path=str(extension_dir), diagnostics=diagnostics)
                     if storage_modified:
                         detection = "storage"
 
             vuln_record["detection"] = detection
+            vuln_record["diagnostics"] = diagnostics
+            vuln_record["target_extension_id"] = target_extension_id
 
             if detection:
                 vuln_record["verification_status"] = "verified"
                 log_success(f"Detection: {detection}")
             else:
                 vuln_record["verification_status"] = "no_detection"
-                log_info("Payload executed, no detection")
+                vuln_record["failure_reason"] = derive_failure_reason(
+                    vulnerability_category, detection, diagnostics)
+                log_info(f"Payload executed, no detection ({vuln_record['failure_reason']})")
+
+            # Debuggability: dump screenshot/DOM/payload/debug.json while the page is still open.
+            await capture_failure_artifacts(
+                page, extension_id=extension_id, rule_id=rule_id,
+                vulnerability_category=vulnerability_category, nav_url=nav_url,
+                executed_payload=modified_payload, target_extension_id=target_extension_id,
+                spoofing_applied=bool(spoof_args), diagnostics=diagnostics,
+                failure_reason=vuln_record.get("failure_reason"),
+                verification_status=vuln_record.get("verification_status"),
+                on_success=bool(detection),
+            )
 
             if debug_mode:
                 log_info("Payload executed - inspect the page/console now")
@@ -404,6 +439,23 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
         else:
             log_info("No manifest modifications needed")
 
+        # Pin the ID of every extension that doesn't ship its own 'key'. An unpacked extension loads
+        # under a non-original, path-derived ID regardless, so pinning to a *known* ID is strictly more
+        # reliable than runtime discovery — it removes the lazy-MV3-service-worker discovery timeout
+        # that otherwise makes ID discovery fall back to the wrong (original) ID, breaking every
+        # extension-context navigation (seeding + storage verification). Extensions with their own
+        # 'key' keep their packed identity (pin_extension_id returns None for them), and discovery
+        # below stays as a fallback for the rare case pinning could not write the manifest.
+        # Pinning can be disabled with DETERMINISTIC_EXTENSION_ID=false to reproduce the old
+        # runtime-ID-discovery behaviour (used for old-vs-new baseline comparisons). Default on.
+        _pin_enabled = (os.getenv("DETERMINISTIC_EXTENSION_ID", "true").strip().lower()
+                        not in ("0", "false", "no", "off"))
+        pinned_extension_id = None
+        if _pin_enabled and not has_fixed_extension_id(extension_dir):
+            pinned_extension_id = pin_extension_id(extension_dir)
+            if pinned_extension_id:
+                log_success(f"Pinned extension ID: {pinned_extension_id}")
+
         async with async_playwright() as p:
             vulnerabilities_with_detection = []
 
@@ -418,7 +470,8 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
 
                     timer.start_vuln(vuln.get('rule_id'), vuln.get('attacker_source'))
                     result = await verify_extension_mode_vulnerability(
-                        extension_id, extension_dir, vuln, p, debug_mode=debug_mode
+                        extension_id, extension_dir, vuln, p, debug_mode=debug_mode,
+                        pinned_extension_id=pinned_extension_id,
                     )
                     vulnerabilities_with_detection.append(result)
 
@@ -441,6 +494,10 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
                     payload = vuln.get('attacker_payload')
                     rule_id = vuln.get('rule_id')
 
+                    # Resolve navigation target + domain-spoofing launch args for this vulnerability.
+                    # No-op (configured page, no args) unless spoofing is enabled and a specific_domain is set.
+                    nav_url, spoof_args = spoof_target(vuln, config)
+
                     # Early skip check for SKIPPED_APIS (before browser launch to avoid wasted work)
                     verification_details_early = vuln.get('verification_details')
                     storage_api_early = verification_details_early.get('storage_api') if verification_details_early else None
@@ -456,7 +513,7 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
                         continue
 
                     # Start fresh browser for this vulnerability
-                    context, user_data_dir = await launch_browser_with_extension(extension_dir, p)
+                    context, user_data_dir = await launch_browser_with_extension(extension_dir, p, extra_args=spoof_args)
 
                     if not context:
                         vuln_record = {
@@ -480,7 +537,10 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
                     # even when the payload doesn't explicitly mention the extension ID
                     vulnerability_category_cur = vuln.get('vulnerability_category', '')
                     needs_storage_context = vulnerability_category_cur in ('storage', 'data_exfiltration')
-                    if (not needs_id and not needs_storage_context) or not has_background_context(extension_dir):
+                    if pinned_extension_id:
+                        # Content-script-only extension with a pinned manifest key → ID is known.
+                        actual_extension_id = pinned_extension_id
+                    elif (not needs_id and not needs_storage_context) or not has_background_context(extension_dir):
                         actual_extension_id = extension_id
                         if needs_id or needs_storage_context:
                             log_info("No background context – skipping ID discovery, using original ID")
@@ -510,7 +570,10 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
                         "manifest_modifications": modifications,
                         "detection": None,
                         "verification_status": None,
-                        "error": None
+                        "error": None,
+                        "nav_url": nav_url,
+                        "spoofing_applied": bool(spoof_args),
+                        "target_extension_id": actual_extension_id,
                     }
 
                     if debug_mode:
@@ -529,9 +592,10 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
                                 log_info(f"Navigating to {config.VERIFICATION_PAGE_URL}...")
 
                             try:
-                                # Use HTTP (not HTTPS) to avoid mixed content blocking HTTP requests to mock server
+                                # Default nav is the configured verification page; with domain spoofing
+                                # on, nav_url is the real restricted origin over HTTPS.
                                 async with timer.step("page_navigation", "PAGE_NAVIGATION_TIMEOUT"):
-                                    await page.goto(config.VERIFICATION_PAGE_URL, timeout=int(config.PAGE_NAVIGATION_TIMEOUT * 1000), wait_until="domcontentloaded")
+                                    await page.goto(nav_url, timeout=int(config.PAGE_NAVIGATION_TIMEOUT * 1000), wait_until="domcontentloaded")
                                 # Ensure this page/tab is active (bring to front)
                                 await page.bring_to_front()
                                 log_success("Page loaded successfully")
@@ -593,6 +657,7 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
                                 vulnerabilities_with_detection.append(vuln_record)
                                 continue  # Skip this vulnerability
 
+                            diagnostics = {}
                             async with timer.step("payload_detection", "PAYLOAD_EXECUTION_TIMEOUT"):
                                 detection = await execute_payload_and_detect(
                                     page,
@@ -603,7 +668,8 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
                                     verification_token=verification_token,
                                     extension_id=actual_extension_id,
                                     extension_path=str(extension_dir),
-                                    skip_seeding=True  # Already seeded above
+                                    skip_seeding=True,  # Already seeded above
+                                    diagnostics=diagnostics
                                 )
 
                             # Retry once if no detection (extension warm-up issue)
@@ -612,11 +678,12 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
                                 try:
                                     if page.is_closed():
                                         raise RuntimeError("Page was closed before retry")
-                                    # Navigate back to the verification page (page may be on wrong domain after storage check)
+                                    # Navigate back to the attacker origin (page may be on a different domain after storage check)
                                     async with timer.step("retry_navigation", "RETRY_NAVIGATION_TIMEOUT"):
-                                        await page.goto(config.VERIFICATION_PAGE_URL, wait_until="domcontentloaded", timeout=int(config.RETRY_NAVIGATION_TIMEOUT * 1000))
+                                        await page.goto(nav_url, wait_until="domcontentloaded", timeout=int(config.RETRY_NAVIGATION_TIMEOUT * 1000))
                                     await asyncio.sleep(1.0)
                                     verification_token = mock_server.reset_and_get_token()
+                                    diagnostics = {}
                                     async with timer.step("retry_payload_detection", "PAYLOAD_EXECUTION_TIMEOUT"):
                                         detection = await execute_payload_and_detect(
                                             page,
@@ -627,20 +694,35 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
                                             verification_token=verification_token,
                                             extension_id=actual_extension_id,
                                             extension_path=str(extension_dir),
-                                            skip_seeding=True  # Don't seed again on retry!
+                                            skip_seeding=True,  # Don't seed again on retry!
+                                            diagnostics=diagnostics
                                         )
                                 except Exception as retry_err:
                                     log_error(f"Retry failed: {retry_err}")
                                     detection = None
 
                             vuln_record["detection"] = detection
+                            vuln_record["diagnostics"] = diagnostics
 
                             if detection:
                                 vuln_record["verification_status"] = "verified"
                                 log_success(f"Detection: {detection}")
                             else:
                                 vuln_record["verification_status"] = "no_detection"
-                                log_info("Payload executed, no detection")
+                                vuln_record["failure_reason"] = derive_failure_reason(
+                                    vulnerability_category, detection, diagnostics)
+                                log_info(f"Payload executed, no detection ({vuln_record['failure_reason']})")
+
+                            # Debuggability: dump screenshot/DOM/payload/debug.json (page still open).
+                            await capture_failure_artifacts(
+                                page, extension_id=extension_id, rule_id=rule_id,
+                                vulnerability_category=vulnerability_category, nav_url=nav_url,
+                                executed_payload=modified_payload, target_extension_id=actual_extension_id,
+                                spoofing_applied=bool(spoof_args), diagnostics=diagnostics,
+                                failure_reason=vuln_record.get("failure_reason"),
+                                verification_status=vuln_record.get("verification_status"),
+                                on_success=bool(detection),
+                            )
 
                             if debug_mode:
                                 log_info("Payload executed - inspect the page/console now")

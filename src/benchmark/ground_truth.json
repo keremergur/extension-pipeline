@@ -1,0 +1,55 @@
+{
+  "description": "Ground-truth set for measuring the Verifier in isolation (Phase 0). Each entry has an extension_id plus one or more Analysis-JSON-shaped vulnerability objects with hand-verified fields, and an 'expected' outcome per vulnerability. Populate 'positive' entries from confirmed-vulnerable extensions (e.g. the thesis S1 list, Appendix D.1.1) and 'control' entries from extensions that must NOT verify (negative controls that guard precision). The extension code for each id must be locally available (downloaded/extracted) for the benchmark to run.",
+  "schema": {
+    "extension_id": "string - Chrome extension id; its code must be locally available",
+    "note": "string - human description of why this case is here",
+    "is_control": "bool (optional) - true for negative controls that must NOT verify",
+    "vulnerabilities": "array of Analysis-JSON vulnerability objects, each augmented with an 'expected' field",
+    "expected": "'verified' | 'not_verified' - per-vulnerability expected verifier outcome"
+  },
+  "entries": [
+    {
+      "extension_id": "REPLACE_WITH_REAL_ID_verified_storage",
+      "note": "EXAMPLE ONLY — replace with a real confirmed-vulnerable extension (thesis S1 storage). Shows the required shape.",
+      "vulnerabilities": [
+        {
+          "rule_id": "chrome/trigger/storage/set",
+          "vulnerability_category": "storage",
+          "result": "TP",
+          "attacker_payload": "window.postMessage({type:'set', key:'exploit', value:'exploit'}, '*');",
+          "attacker_source": "Website",
+          "verification_details": {
+            "specific_domain": null,
+            "domain_restriction_source": null,
+            "storage_api": "chrome.storage.local.set",
+            "storage_key": "exploit",
+            "storage_domain": null
+          },
+          "expected": "verified"
+        }
+      ]
+    },
+    {
+      "extension_id": "REPLACE_WITH_REAL_ID_negative_control",
+      "note": "EXAMPLE ONLY — replace with a real safe extension. Must NOT verify (precision guard).",
+      "is_control": true,
+      "vulnerabilities": [
+        {
+          "rule_id": "chrome/trigger/storage/set",
+          "vulnerability_category": "storage",
+          "result": "TP",
+          "attacker_payload": "window.postMessage({type:'noop'}, '*');",
+          "attacker_source": "Website",
+          "verification_details": {
+            "specific_domain": null,
+            "domain_restriction_source": null,
+            "storage_api": "chrome.storage.local.set",
+            "storage_key": "exploit",
+            "storage_domain": null
+          },
+          "expected": "not_verified"
+        }
+      ]
+    }
+  ]
+}

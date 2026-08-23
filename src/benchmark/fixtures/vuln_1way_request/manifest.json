@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Fixture - Vulnerable 1way_request",
+  "version": "1.0",
+  "description": "TEST DOUBLE (not a real extension). Relays an attacker-controlled URL from a web page into a privileged service-worker fetch. The outbound request carries chrome.runtime.id, so it is attributable to the extension context => genuine 1way_request vulnerability.",
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_start" }
+  ]
+}

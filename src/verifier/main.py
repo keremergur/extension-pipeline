@@ -1,7 +1,9 @@
+import asyncio
 import json
 from datetime import datetime
 import config
 from mock_server import get_mock_server
+from domain_spoofing import get_spoof_server
 from .logging_utils import log_error, log_info, log_mock_server_ready, log_step, log_success
 from .constants import Color
 from .results import (
@@ -13,6 +15,36 @@ from .results import (
 from .orchestrator import verify_extension
 from .timing import timer
 from .console_logging import ConsoleTee
+from .debugging import set_artifact_root
+
+
+def _preflight() -> bool:
+    """Fail fast & loud on misconfiguration before any real work (prevents whole-run waste).
+
+    Checks the things that otherwise produce a silent all-failed run: the Chrome binary must exist,
+    and if domain spoofing is enabled the TLS cert dependency must be importable.
+    """
+    from pathlib import Path as _Path
+    ok = True
+
+    chrome = _Path(config.CHROME_BINARY_PATH)
+    if chrome.exists():
+        log_success(f"Preflight: Chrome binary OK ({chrome})")
+    else:
+        log_error(f"Preflight: Chrome binary NOT found at {chrome}")
+        log_error("  -> Set CHROME_BINARY_PATH (env/.env) to the Chrome-for-Testing binary on this host.")
+        ok = False
+
+    if getattr(config, "ENABLE_DOMAIN_SPOOFING", False):
+        try:
+            from cryptography import x509  # noqa: F401
+            log_success("Preflight: domain spoofing enabled; cryptography available")
+        except Exception as e:
+            log_error(f"Preflight: ENABLE_DOMAIN_SPOOFING is on but 'cryptography' is missing: {e}")
+            log_error("  -> pip install cryptography, or disable ENABLE_DOMAIN_SPOOFING.")
+            ok = False
+
+    return ok
 
 
 async def main():
@@ -32,6 +64,11 @@ async def _run(console_tee):
     print("EXTENSION VERIFICATION")
     print("=" * 70)
 
+    # Startup preflight — bail out loudly on misconfiguration rather than producing an all-failed run.
+    if not _preflight():
+        log_error("Preflight failed — aborting before launching any browser. Fix the above and re-run.")
+        return
+
     # Start mock server
     mock_server = get_mock_server()
     if not mock_server.start():
@@ -40,6 +77,12 @@ async def _run(console_tee):
 
     mock_server_url = mock_server.get_url()
     log_mock_server_ready(mock_server_url)
+
+    # Start the domain-spoofing HTTPS origin server if enabled (Phase 2).
+    if getattr(config, "ENABLE_DOMAIN_SPOOFING", False):
+        spoof_server = get_spoof_server(https_port=getattr(config, "DOMAIN_SPOOF_HTTPS_PORT", 3443))
+        if not spoof_server.start():
+            log_error("Failed to start domain-spoof server — continuing without spoofing")
 
     # Log which verification page host is in use (real example.com vs. local server)
     page_mode = "local dummy server" if config.USE_LOCAL_VERIFICATION_SERVER else "example.com"
@@ -91,6 +134,9 @@ async def _run(console_tee):
     # the output buffered before the run dir existed).
     console_tee.set_file(verification_output_dir / "console.txt")
 
+    # Point failure-artifact capture (screenshots/DOM/payload/debug.json) at this run directory.
+    set_artifact_root(verification_output_dir / "_debug_artifacts")
+
     # Record the configuration used for this run (copied env file, or a
     # reconstructed snapshot when the original env file path is unknown).
     write_env_snapshot(verification_output_dir)
@@ -141,7 +187,27 @@ async def _run(console_tee):
         else:
             print(f"[{idx}/{len(tp_verifiable)}] {extension_id}...", end=" ", flush=True)
 
-        verification = await verify_extension(extension_id, vulnerabilities, debug_mode=debug_mode)
+        # Hard per-extension timeout — safety net against the silent-hang bug (see Phase 1).
+        # Disabled in debug mode, which is legitimately long-running due to interactive prompts.
+        per_ext_timeout = getattr(config, 'PER_EXTENSION_TIMEOUT', None)
+        try:
+            if per_ext_timeout and not debug_mode:
+                verification = await asyncio.wait_for(
+                    verify_extension(extension_id, vulnerabilities, debug_mode=debug_mode),
+                    timeout=per_ext_timeout
+                )
+            else:
+                verification = await verify_extension(extension_id, vulnerabilities, debug_mode=debug_mode)
+        except asyncio.TimeoutError:
+            log_error(f"Extension {extension_id} timed out after {per_ext_timeout}s — recording as error")
+            verification = {
+                "extension_id": extension_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "error",
+                "vulnerabilities_verified": [],
+                "errors": [f"Per-extension timeout ({per_ext_timeout}s) exceeded"],
+                "failure_reason": "timed_out",
+            }
         all_verifications.append(verification)
 
         # Save individual verification result (preserve subdirectory structure)
@@ -170,6 +236,15 @@ async def _run(console_tee):
             "skipped": sum(1 for v in all_verifications if v.get('status') == 'skipped'),
         }
     }
+
+    # Aggregate failure reasons across all vulnerabilities (Phase 1 diagnostics) for quick triage.
+    failure_hist = {}
+    for v in all_verifications:
+        for vv in v.get('vulnerabilities_verified', []):
+            reason = vv.get('failure_reason')
+            if reason:
+                failure_hist[reason] = failure_hist.get(reason, 0) + 1
+    summary["failure_reasons"] = dict(sorted(failure_hist.items(), key=lambda x: -x[1]))
 
     summary_file = verification_output_dir / "verification_summary.json"
     with open(summary_file, 'w', encoding='utf-8') as f:

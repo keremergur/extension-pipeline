@@ -22,7 +22,7 @@ def _resolve_headless_mode(headless_setting: str):
     return False, []
 
 
-async def launch_browser_with_extension(extension_dir: Path, p, verifier_dir: Optional[Path] = None, user_data_dir: Optional[Path] = None):
+async def launch_browser_with_extension(extension_dir: Path, p, verifier_dir: Optional[Path] = None, user_data_dir: Optional[Path] = None, extra_args: Optional[list] = None):
     """
     Launch Chrome with extension(s) loaded.
 
@@ -31,6 +31,7 @@ async def launch_browser_with_extension(extension_dir: Path, p, verifier_dir: Op
         p: Playwright instance
         verifier_dir: Optional path to attacker/verifier extension
         user_data_dir: Optional custom user data directory. If None, creates a unique temporary directory.
+        extra_args: Optional extra Chrome launch args (e.g. domain-spoofing host-resolver rules).
 
     Returns:
         Tuple of (context, user_data_dir) where user_data_dir is the path that should be cleaned up after use
@@ -78,6 +79,10 @@ async def launch_browser_with_extension(extension_dir: Path, p, verifier_dir: Op
             "--no-first-run",
             "--no-default-browser-check",
         ] + headless_args
+
+        # Caller-supplied launch args (e.g. domain-spoofing host-resolver rules; see domain_spoofing.py).
+        if extra_args:
+            args.extend(extra_args)
 
         context = await p.chromium.launch_persistent_context(
             user_data_dir=str(user_data_dir),

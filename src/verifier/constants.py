@@ -34,7 +34,6 @@ SKIPPED_APIS = {
     'chrome.management.get',
     'chrome.management.getAll',
     'chrome.management.getSelf',
-    'chrome.declarativeNetRequest.updateDynamicRules',
     'chrome.topSites.get'
 }
 CHROME_STORAGE_APIS = {

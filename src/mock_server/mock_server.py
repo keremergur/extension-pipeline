@@ -40,30 +40,69 @@ _request_log = []  # Detailed log of all requests with context info
 _current_token = str(uuid.uuid4())  # Unique token for current test (initialized on startup)
 _request_lock = Lock()
 
+def _log_entry(path: str) -> dict:
+    """Fingerprint one incoming request.
+
+    Beyond ``ext``/``Origin`` (the two signals attribution currently uses) this records the
+    Fetch Metadata headers. They are what distinguishes a page-initiated fetch
+    (``Sec-Fetch-Site: cross-site``, ``Origin`` present) from a navigation the extension opened
+    itself via ``chrome.tabs.create`` (``Sec-Fetch-Site: none``, ``Sec-Fetch-Dest: document``,
+    no ``Origin``) — the latter currently gets misread as page context.
+    """
+    return {
+        'path': path,
+        'timestamp': time.time(),
+        'extension_id': request.args.get('ext'),  # chrome.runtime.id or 'web'
+        'origin': request.headers.get('Origin'),
+        'referer': request.headers.get('Referer'),
+        'sec_fetch_site': request.headers.get('Sec-Fetch-Site'),
+        'sec_fetch_mode': request.headers.get('Sec-Fetch-Mode'),
+        'sec_fetch_dest': request.headers.get('Sec-Fetch-Dest'),
+        'query_params': dict(request.args),
+        'method': request.method,
+    }
+
+
+#: Count requests the page provably did not initiate as extension-context. Measured on the real
+#: dataset: of 120 requests attribution rejected, 88 were top-level navigations and 19 were fetches
+#: that carried ``Sec-Fetch-Site: none`` — no initiator origin, i.e. not started by the page. The
+#: page's own requests are distinguishable: they arrive as ``cross-site``/``same-origin`` with an
+#: ``Origin``.
+#:
+#: On by default since the no-op-payload control cleared it: the same 575 vulnerabilities re-run with
+#: every ``attacker_payload`` replaced by a no-op verified 0 and drew 0 requests, so all 106 findings
+#: this rule adds are payload-triggered rather than background traffic the extension makes anyway.
+#: Set to false to fall back to the stricter ``ext``/``Origin``-only attribution.
+_COUNT_UNINITIATED = (os.getenv("COUNT_UNINITIATED_AS_EXTENSION") or "true").strip().lower() \
+    in ("1", "true", "yes", "on")
+
+
+def _attribution(r: dict):
+    """Why this request counts as extension context, or None if it does not.
+
+    The returned tag travels into the result JSON so a verified finding always states which
+    evidence carried it — a request tagged ``uninitiated`` is weaker than one carrying the
+    extension's own id and must stay separable when auditing precision.
+    """
+    if r.get('extension_id') and r['extension_id'] != 'web':
+        return 'ext_param'
+    if (r.get('origin') or '').startswith('chrome-extension://'):
+        return 'extension_origin'
+    if _COUNT_UNINITIATED and r.get('sec_fetch_site') == 'none' and not r.get('origin'):
+        return 'uninitiated'
+    return None
+
+
 @app.before_request
 def track_request():
     """Track incoming requests for verification."""
     with _request_lock:
         if request.path == '/api/data':
             _request_counts['api_data'] += 1
-            _request_log.append({
-                'path': '/api/data',
-                'timestamp': time.time(),
-                'extension_id': request.args.get('ext'),  # chrome.runtime.id or 'web'
-                'origin': request.headers.get('Origin'),
-                'query_params': dict(request.args),
-                'method': request.method
-            })
+            _request_log.append(_log_entry('/api/data'))
         elif request.path == '/api/file':
             _request_counts['api_file'] += 1
-            _request_log.append({
-                'path': '/api/file',
-                'timestamp': time.time(),
-                'extension_id': request.args.get('ext'),
-                'origin': request.headers.get('Origin'),
-                'query_params': dict(request.args),
-                'method': request.method
-            })
+            _request_log.append(_log_entry('/api/file'))
 
 # =============================================================================
 # CORS SUPPORT
@@ -173,21 +212,21 @@ def get_requests():
 
     with _request_lock:
         requests_copy = list(_request_log)
-        # Check if any request came from extension context:
-        # - ext parameter set by code_execution payloads (chrome.runtime.id)
-        # - Origin header chrome-extension://... set automatically by Chrome for extension requests
-        extension_requests = [
-            r for r in requests_copy
-            if (r.get('extension_id') and r['extension_id'] != 'web')
-            or (r.get('origin') or '').startswith('chrome-extension://')
-        ]
+        attributions = [_attribution(r) for r in requests_copy]
+        extension_requests = [r for r, a in zip(requests_copy, attributions) if a]
+
+    counts = {}
+    for a in attributions:
+        if a:
+            counts[a] = counts.get(a, 0) + 1
 
     return jsonify({
         "status": "ok",
         "requests": requests_copy,
         "total_requests": len(requests_copy),
         "extension_context_requests": len(extension_requests),
-        "has_extension_context": len(extension_requests) > 0
+        "has_extension_context": len(extension_requests) > 0,
+        "attribution_counts": counts,
     })
 
 

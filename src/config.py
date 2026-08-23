@@ -275,6 +275,18 @@ RESUME_VERIFICATION_RUN = None
 # Increase if extensions are slow to process payloads.
 PAYLOAD_EXECUTION_TIMEOUT = _env_seconds("PAYLOAD_EXECUTION_TIMEOUT", 3)
 
+# Settle time after the attacker page loads, before the payload is injected — lets the extension load
+# and register its message listeners / wake its service worker. If it is still not listening when the
+# single payload fires, the message is lost (a systematic non-fire, distinct from run-to-run noise).
+# Exposed so the timing hypothesis for storage_key_absent / no_request can be measured (1s vs 3s).
+PAYLOAD_PRE_INJECT_SETTLE = _env_seconds("PAYLOAD_PRE_INJECT_SETTLE", 1)
+
+# After the payload is injected, synthetically click page controls / submit forms so that
+# interaction-gated vulnerabilities (which the thesis estimates at ~1/3 of unverified cases) can fire.
+# Precision-safe (a no-op payload installs no handler to trigger); default off pending measurement.
+SIMULATE_USER_INTERACTION = (os.getenv("SIMULATE_USER_INTERACTION") or "false").strip().lower() \
+    in ("1", "true", "yes", "on")
+
 # Wait for a page navigation (page.goto) to reach DOMContentLoaded.
 PAGE_NAVIGATION_TIMEOUT = _env_seconds("PAGE_NAVIGATION_TIMEOUT", 30)
 
@@ -299,6 +311,35 @@ PAGE_CLOSE_TIMEOUT = _env_seconds("PAGE_CLOSE_TIMEOUT", 5)
 # - "true":  classic headless mode
 # - "new":   Chrome's new headless mode
 HEADLESS = (os.getenv("HEADLESS") or "false").strip().lower()
+
+# ---------------------------------------------------------------------------
+# Verifier improvement effort. All env-overridable, backward compatible.
+# ---------------------------------------------------------------------------
+
+# Hard timeout for verifying a single extension (all its vulnerabilities). If exceeded, the
+# extension is recorded as an error/timeout instead of hanging the whole run — safety net for the
+# "silent hang" bug noted in the thesis. Set env to "none" to disable.
+PER_EXTENSION_TIMEOUT = _env_seconds("PER_EXTENSION_TIMEOUT", 180)
+
+# Capture a tail of the browser console log into each vulnerability result for offline debugging.
+CAPTURE_CONSOLE_LOGS = (os.getenv("CAPTURE_CONSOLE_LOGS") or "true").strip().lower() in ("1", "true", "yes", "on")
+MAX_CAPTURED_CONSOLE_LINES = _env_int_or_none("MAX_CAPTURED_CONSOLE_LINES", 40)
+
+# Domain spoofing (Phase 2) — the single biggest recall lever. 71.3% of TP vulnerabilities
+# are domain-restricted; without spoofing the verifier loads VERIFICATION_PAGE_URL and code-based
+# origin checks fail. When enabled, the verifier maps a vulnerability's specific_domain to a local
+# HTTPS origin server so the attacker page loads under the REAL origin.
+# Default OFF until validated on real domain-restricted extensions.
+ENABLE_DOMAIN_SPOOFING = (os.getenv("ENABLE_DOMAIN_SPOOFING") or "false").strip().lower() in ("1", "true", "yes", "on")
+DOMAIN_SPOOF_HTTPS_PORT = _env_int_or_none("DOMAIN_SPOOF_HTTPS_PORT", 3443)
+
+# Failure-artifact capture (Phase 1 debuggability). On a non-detection, dump a screenshot,
+# the rendered DOM, the executed payload and a debug.json under <run>/_debug_artifacts/ so a single
+# kuria run yields enough to diagnose offline without re-running. Capture is best-effort and can
+# never break or meaningfully slow a run.
+CAPTURE_FAILURE_ARTIFACTS = (os.getenv("CAPTURE_FAILURE_ARTIFACTS") or "true").strip().lower() in ("1", "true", "yes", "on")
+# Also capture artifacts for VERIFIED vulnerabilities (off by default — successes rarely need debugging).
+CAPTURE_ARTIFACTS_ON_SUCCESS = (os.getenv("CAPTURE_ARTIFACTS_ON_SUCCESS") or "false").strip().lower() in ("1", "true", "yes", "on")
 
 # DEBUG_MODE: Enable step-by-step verification with manual confirmation at each step
 # When enabled, browser will NOT auto-close after verification for manual inspection

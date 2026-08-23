@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Fixture - Benign (inert)",
+  "version": "1.0",
+  "description": "TEST DOUBLE control. Has no web-message bridge and does nothing privileged. Receives the same attacker payload but ignores it entirely => MUST NOT verify. Precision control.",
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_start" }
+  ]
+}

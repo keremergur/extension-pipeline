@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Fixture - Vulnerable code_execution",
+  "version": "1.0",
+  "description": "TEST DOUBLE (not a real extension). Exposes a privileged 'command' dispatcher to untrusted page messages; an attacker names the command and its argument, which the extension executes in its own context => code_execution. The resulting request carries chrome.runtime.id.",
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_start" }
+  ]
+}
