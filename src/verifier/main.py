@@ -1,9 +1,11 @@
+import asyncio
 import json
 from datetime import datetime
 import config
 from mock_server import get_mock_server
-from .logging_utils import log_error, log_info, log_mock_server_ready, log_step, log_success
-from .constants import Color
+from .logging_utils import (log_error, log_info, log_mock_server_ready, log_step,
+                            log_success, set_worker_extension)
+from .constants import Color, MOCK_SERVER_CATEGORIES
 from .results import (
     get_analysis_results_dir, load_json_results,
     filter_tp_verifiable_results, apply_verifier_filters,
@@ -13,6 +15,27 @@ from .results import (
 from .orchestrator import verify_extension
 from .timing import timer
 from .console_logging import ConsoleTee
+
+
+def _partition_by_parallel_safety(indexed_entries, debug_mode):
+    """Split (idx, entry) pairs into (parallel_safe, sequential).
+
+    An extension is parallel-safe only when EVERY one of its vulnerabilities is
+    detected without the shared mock server (see config.VERIFIER_PARALLEL). A
+    single mock-server finding makes the whole extension sequential, because one
+    browser session verifies all of that extension's findings together.
+    """
+    if debug_mode or not getattr(config, 'VERIFIER_PARALLEL', False) \
+            or int(getattr(config, 'VERIFIER_PARALLEL_WORKERS', 1)) <= 1:
+        return [], indexed_entries
+
+    parallel, sequential = [], []
+    for idx, entry in indexed_entries:
+        vulns = entry[1]
+        uses_mock = any(v.get('vulnerability_category') in MOCK_SERVER_CATEGORIES
+                        for v in vulns)
+        (sequential if uses_mock else parallel).append((idx, entry))
+    return parallel, sequential
 
 
 async def main():
@@ -117,34 +140,37 @@ async def _run(console_tee):
         log_info(f"Mock server: {mock_server_url}")
         print()
 
-    # Verify each extension
-    all_verifications = []
+    # Verify each extension. Extensions whose findings never touch the shared mock
+    # server may run concurrently (see config.VERIFIER_PARALLEL); the rest keep the
+    # original one-at-a-time flow.
     resume_mode = bool(getattr(config, 'RESUME_VERIFICATION_RUN', None))
-    for idx, (extension_id, vulnerabilities, _, relative_subdir) in enumerate(tp_verifiable, 1):
-        # Pre-compute output paths so we can check for existing results.
+    total = len(tp_verifiable)
+    results_by_index = {}
+
+    async def verify_one(idx, entry):
+        """Resume-check, verify, and persist one extension. Returns its record."""
+        extension_id, vulnerabilities, _, relative_subdir = entry
+        set_worker_extension(extension_id)  # prefix this task's log lines
+
         # The verifier writes its own per-extension result JSON under <run>/results/,
         # preserving the analyzer subdirectory structure; also used for resume.
         output_subdir = verification_output_dir / "results" / relative_subdir
         verification_file = output_subdir / f"{extension_id}_result.json"
 
-        # Skip already-verified extensions when resuming
         if resume_mode and verification_file.exists():
             with open(verification_file, 'r', encoding='utf-8') as f:
                 existing = json.load(f)
-            all_verifications.append(existing)
             if not debug_mode:
-                print(f"[{idx}/{len(tp_verifiable)}] {extension_id}... skipped (already verified)")
-            continue
+                print(f"[{idx}/{total}] {extension_id}... skipped (already verified)")
+            return existing
 
         if debug_mode:
             print(f"\n{Color.BOLD}Verifying: {extension_id}{Color.END}")
         else:
-            print(f"[{idx}/{len(tp_verifiable)}] {extension_id}...", end=" ", flush=True)
+            print(f"[{idx}/{total}] {extension_id}... started", flush=True)
 
         verification = await verify_extension(extension_id, vulnerabilities, debug_mode=debug_mode)
-        all_verifications.append(verification)
 
-        # Save individual verification result (preserve subdirectory structure)
         output_subdir.mkdir(parents=True, exist_ok=True)
         with open(verification_file, 'w', encoding='utf-8') as f:
             json.dump(verification, f, indent=2, default=str)
@@ -152,7 +178,42 @@ async def _run(console_tee):
         if not debug_mode:
             status = verification.get('status', 'unknown')
             detections = len([v for v in verification.get('vulnerabilities_verified', []) if v.get('detection')])
-            print(f"{status} ({detections} detected)" if detections else f"{status}")
+            suffix = f" ({detections} detected)" if detections else ""
+            print(f"[{idx}/{total}] {extension_id}... {status}{suffix}", flush=True)
+        return verification
+
+    parallel_entries, sequential_entries = _partition_by_parallel_safety(
+        list(enumerate(tp_verifiable, 1)), debug_mode)
+
+    if parallel_entries:
+        workers = max(1, int(getattr(config, 'VERIFIER_PARALLEL_WORKERS', 1)))
+        log_info(f"Verifying {len(parallel_entries)} extension(s) with {workers} "
+                 f"parallel worker(s) (storage / data_exfiltration only)")
+        semaphore = asyncio.Semaphore(workers)
+
+        async def guarded(idx, entry):
+            async with semaphore:
+                return idx, await verify_one(idx, entry)
+
+        for coro in asyncio.as_completed([guarded(i, e) for i, e in parallel_entries]):
+            try:
+                idx, verification = await coro
+                results_by_index[idx] = verification
+            except Exception as e:
+                log_error(f"Verification task failed: {e}")
+
+    if sequential_entries:
+        if parallel_entries:
+            log_info(f"Verifying {len(sequential_entries)} extension(s) sequentially "
+                     f"(mock-server detection)")
+        for idx, entry in sequential_entries:
+            try:
+                results_by_index[idx] = await verify_one(idx, entry)
+            except Exception as e:
+                log_error(f"Verification failed for {entry[0]}: {e}")
+
+    # Restore submission order so the summary does not depend on completion order.
+    all_verifications = [results_by_index[i] for i in sorted(results_by_index)]
 
     # Save summary
     summary = {

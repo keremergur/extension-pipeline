@@ -309,6 +309,8 @@ def write_env_snapshot(verification_output_dir: Path) -> Path:
         f"EXTENSION_ID_DISCOVERY_TIMEOUT={config.EXTENSION_ID_DISCOVERY_TIMEOUT}",
         f"BROWSER_CLOSE_TIMEOUT={config.BROWSER_CLOSE_TIMEOUT}",
         f"PAGE_CLOSE_TIMEOUT={config.PAGE_CLOSE_TIMEOUT}",
+        f"DETERMINISTIC_EXTENSION_ID={config.DETERMINISTIC_EXTENSION_ID}",
+        f"EXTENSION_CONTEXT_ID_RECOVERY={config.EXTENSION_CONTEXT_ID_RECOVERY}",
         f"VERIFIER_FILTER_VULNERABILITY_CATEGORIES={_fmt_env_value(config.VERIFIER_FILTER.get('vulnerability_categories'))}",
         f"VERIFIER_FILTER_STORAGE_APIS={_fmt_env_value(config.VERIFIER_FILTER.get('storage_apis'))}",
         f"VERIFIER_FILTER_MIN_VULNERABILITIES={_fmt_env_value(config.VERIFIER_FILTER.get('min_vulnerabilities'))}",

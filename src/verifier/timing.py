@@ -5,15 +5,19 @@ timeout variables in config.py), plus the total duration of each vulnerability
 and each extension. The collected tree is written to ``time.json`` in the run
 folder by main.py.
 
-A single module-level ``timer`` instance is used. The verifier processes one
-extension and one vulnerability at a time (async but not concurrently across
-extensions/vulns), so a simple "current extension / current vulnerability"
-pointer is enough — no need to thread an object through every call site.
+A single module-level ``timer`` instance is used. The "current extension /
+current vulnerability" cursors are held in ContextVars rather than plain
+attributes, so that when VERIFIER_PARALLEL runs several verifications
+concurrently each asyncio task gets its own cursor (a task inherits a *copy* of
+the context at creation) and their steps cannot land in each other's records.
+The ``run["extensions"]`` list they append into is shared, which is safe: asyncio
+tasks interleave only at await points and list.append is atomic.
 
 All public methods are defensive: instrumentation must never break a
 verification run, so failures here are swallowed.
 """
 
+import contextvars
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -80,11 +84,33 @@ def _strip_internal(obj):
     return obj
 
 
+# Per-task cursors (see module docstring): each concurrent verification gets its
+# own "current extension"/"current vulnerability" without threading state around.
+_ext_var = contextvars.ContextVar("timer_current_extension", default=None)
+_vuln_var = contextvars.ContextVar("timer_current_vuln", default=None)
+
+
 class _Timer:
     def __init__(self):
         self.run = None
-        self._ext = None
-        self._vuln = None
+
+    # `_ext`/`_vuln` stay plain attribute syntax at every call site, but read and
+    # write the task-local ContextVars underneath.
+    @property
+    def _ext(self):
+        return _ext_var.get()
+
+    @_ext.setter
+    def _ext(self, value):
+        _ext_var.set(value)
+
+    @property
+    def _vuln(self):
+        return _vuln_var.get()
+
+    @_vuln.setter
+    def _vuln(self, value):
+        _vuln_var.set(value)
 
     # -- run -----------------------------------------------------------------
     def start_run(self):

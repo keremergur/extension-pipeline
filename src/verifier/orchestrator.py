@@ -6,7 +6,8 @@ from typing import Dict, List
 from playwright.async_api import async_playwright
 import config
 from mock_server import get_mock_server
-from .logging_utils import log_step, log_success, log_error, log_info, ask_continue, log_step_failed
+from .logging_utils import (log_step, log_success, log_error, log_info, ask_continue,
+                            log_step_failed, set_worker_extension)
 from .constants import Color, SKIPPED_APIS, RETRY_CATEGORIES
 from .browser import launch_browser_with_extension
 from .extension_code import get_extension_code_dir, validate_extension_structure
@@ -18,6 +19,8 @@ from .extension_id import (
     payload_mentions_extension_id,
     discover_runtime_extension_id_from_context,
     replace_extension_id_in_payload,
+    compute_unpacked_extension_id,
+    peek_runtime_extension_ids,
 )
 from .verifier_extension import prepare_verifier_extension
 from .seeding import seed_test_data
@@ -70,7 +73,18 @@ async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: 
                 log_success(f"Extension has fixed ID (manifest 'key' present): {target_extension_id}")
         else:
             # Extension has no 'key' → ID is random, need to discover it
-            if not needs_id_replacement:
+            computed_extension_id = (
+                compute_unpacked_extension_id(extension_dir)
+                if config.DETERMINISTIC_EXTENSION_ID else None
+            )
+            if computed_extension_id:
+                # Chrome derives an unpacked extension's ID from its absolute path, so
+                # the runtime ID is known up front — no discovery browser needed.
+                target_extension_id = computed_extension_id
+                if debug_mode:
+                    log_step(2, "Extension ID determination")
+                log_info(f"Computed unpacked extension ID from path: {target_extension_id}")
+            elif not needs_id_replacement:
                 target_extension_id = extension_id
                 if debug_mode:
                     log_step(2, "Extension ID determination")
@@ -247,7 +261,10 @@ async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: 
                     timeout_s=config.PAYLOAD_EXECUTION_TIMEOUT,
                     mock_server=mock_server,
                     verification_token=verification_token,
-                    extension_id=extension_id,
+                    # The resolved runtime ID, matching seeding and the storage check
+                    # below — data_exfiltration verification reads the extension's own
+                    # storage and cannot do that through the analysis-time .crx ID.
+                    extension_id=target_extension_id,
                     extension_path=str(extension_dir)
                 )
             )
@@ -336,6 +353,8 @@ async def verify_extension_mode_vulnerability(extension_id: str, extension_dir: 
 
 async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug_mode: bool = False) -> Dict:
     """Verify a single extension's vulnerabilities."""
+    # Tag this task's log lines (no-op when the caller already set it).
+    set_worker_extension(extension_id)
     verification_result = {
         "extension_id": extension_id,
         "timestamp": datetime.now().isoformat(),
@@ -472,18 +491,45 @@ async def verify_extension(extension_id: str, vulnerabilities: List[dict], debug
 
                     log_success("Fresh browser launched")
 
-                    # Discover actual extension ID for this fresh browser instance
-                    # Skip discovery for content-script-only extensions (no background context → always times out)
+                    # Determine the runtime extension ID for this fresh browser instance.
+                    # Preferred order: not needed at all → pinned by manifest 'key' →
+                    # computed from the extension path → runtime discovery.
                     payload_cur = vuln.get('attacker_payload', '')
                     needs_id = payload_mentions_extension_id(payload_cur, extension_id)
                     # storage/data_exfiltration need runtime ID for verify_storage.html navigation,
                     # even when the payload doesn't explicitly mention the extension ID
                     vulnerability_category_cur = vuln.get('vulnerability_category', '')
                     needs_storage_context = vulnerability_category_cur in ('storage', 'data_exfiltration')
-                    if (not needs_id and not needs_storage_context) or not has_background_context(extension_dir):
+                    fixed_id = has_fixed_extension_id(extension_dir)
+                    computed_extension_id = (
+                        compute_unpacked_extension_id(extension_dir)
+                        if (config.DETERMINISTIC_EXTENSION_ID
+                            and (needs_id or needs_storage_context)
+                            and not fixed_id)
+                        else None
+                    )
+                    if not needs_id and not needs_storage_context:
                         actual_extension_id = extension_id
-                        if needs_id or needs_storage_context:
-                            log_info("No background context – skipping ID discovery, using original ID")
+                    elif fixed_id:
+                        # 'key' in manifest → runtime ID is deterministic and equals the .crx ID
+                        actual_extension_id = extension_id
+                    elif computed_extension_id:
+                        # Path-derived ID: correct even for content-script-only extensions,
+                        # which never expose a chrome-extension:// URL to discover.
+                        actual_extension_id = computed_extension_id
+                        log_info(f"Computed unpacked extension ID from path: {actual_extension_id}")
+                        # Only the target extension is loaded here, so anything already live
+                        # should carry the computed ID. A mismatch is worth surfacing: it
+                        # would mean Chrome's path-based ID scheme changed.
+                        live_ids = peek_runtime_extension_ids(context)
+                        if live_ids and actual_extension_id not in live_ids:
+                            log_error(
+                                f"Computed ID {actual_extension_id} not among live extension "
+                                f"contexts ({', '.join(live_ids)}) - navigation will fall back to ID recovery"
+                            )
+                    elif not has_background_context(extension_dir):
+                        actual_extension_id = extension_id
+                        log_info("No background context – skipping ID discovery, using original ID")
                     else:
                         temp_page = await context.new_page()
                         try:

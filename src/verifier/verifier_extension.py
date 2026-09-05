@@ -2,13 +2,13 @@ import shutil
 from pathlib import Path
 from typing import Optional
 from .logging_utils import log_error, log_success
-from .paths import VERIFIER_EXTENSIONS_DIR
+from .paths import VERIFIER_EXTENSIONS_DIR, VERIFIER_EXTENSIONS_TEMPLATE_DIR
 
 
 def prepare_verifier_extension(extension_id: str, payload: str) -> Optional[Path]:
     """Copy verifier extension template and inject payload."""
     try:
-        verifier_template = VERIFIER_EXTENSIONS_DIR / "_original"
+        verifier_template = VERIFIER_EXTENSIONS_TEMPLATE_DIR / "_original"
         if not verifier_template.exists():
             log_error(f"Verifier extension template not found: {verifier_template}")
             return None

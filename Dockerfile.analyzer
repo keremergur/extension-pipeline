@@ -1,0 +1,28 @@
+FROM python:3.12-slim
+
+# The analyzer is headless: it reads static-analysis reports (CodeQL/CoCo/DoubleX),
+# downloads/extracts extension .crx code over SFTP, and calls an LLM. It never
+# launches a browser, so none of the Xvfb / Chrome shared libs from
+# Dockerfile.verifier are needed here.
+#
+# build-essential + git are kept only as a safety net for building any Python
+# wheel that lacks a prebuilt binary; drop them if you want an even slimmer image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+RUN groupadd -g ${GROUP_ID} appuser && \
+    useradd -u ${USER_ID} -g ${GROUP_ID} -m appuser
+
+WORKDIR /app
+COPY src/ ./src/
+
+RUN if [ -f src/requirements.txt ]; then pip install --no-cache-dir -r src/requirements.txt; fi
+
+USER appuser
+
+# Run the analyzer directly (no xvfb wrapper needed).
+ENTRYPOINT ["python", "src/analyze_extensions.py"]

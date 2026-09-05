@@ -48,8 +48,31 @@ CHROME_STORAGE_APIS = {
 # Used both for Python membership checks and to build the equivalent JS condition.
 EXPLOIT_MARKERS = ("exploit", "123456789")
 
+# Categories whose detection reads the process-wide mock server (its request log
+# and the per-test token it hands out on reset). Verifications of these cannot run
+# concurrently -- they would reset and mis-attribute each other's state -- so
+# config.VERIFIER_PARALLEL keeps any extension containing one of them sequential.
+# Everything else (storage -> the extension's own chrome.storage; data_exfiltration
+# -> the [EXFIL] marker on its own page console) is independent per browser context.
+MOCK_SERVER_CATEGORIES = frozenset({
+    "1way_request", "2way_request", "code_execution", "download",
+})
+
 # Categories for which a retry after no detection is worthwhile (warm-up / timing issues)
 RETRY_CATEGORIES: set = set()  # Disabled: retries cost time without reliable benefit
+
+# Filename and marker of the page the verifier writes into every target extension to
+# get a chrome-extension:// context with Chrome API access. The marker lets ID
+# recovery tell "our page in the target extension" apart from an unrelated
+# chrome-extension:// origin (the verifier extension, a Chrome component extension,
+# or an extension that happens to ship a file of the same name).
+STORAGE_PAGE_FILENAME = "verify_storage.html"
+STORAGE_PAGE_MARKER = "chrome-ext-verifier-storage-page"
+STORAGE_PAGE_HTML = (
+    '<!DOCTYPE html><html><head>'
+    f'<meta name="verifier-storage-page" content="{STORAGE_PAGE_MARKER}">'
+    '</head><body></body></html>'
+)
 
 
 class Color:

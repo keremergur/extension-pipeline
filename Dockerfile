@@ -37,6 +37,15 @@ COPY src/ ./src/
 
 RUN if [ -f src/requirements.txt ]; then pip install --no-cache-dir -r src/requirements.txt; fi
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 USER appuser
 
-CMD xvfb-run -a python src/verify_extensions.py
+# The entrypoint dispatches on the role argument (see docker-entrypoint.sh):
+#   docker run <image>            -> verifier (default)
+#   docker run <image> analyzer   -> analyzer only
+#   docker run <image> verifier   -> verifier only
+#   docker run <image> both       -> analyzer, then verifier (future full pipeline)
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["verifier"]

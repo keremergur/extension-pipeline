@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import List
 import config
+from .constants import STORAGE_PAGE_FILENAME, STORAGE_PAGE_HTML
 from .logging_utils import log_error
 
 
@@ -116,12 +117,13 @@ def prepare_extension_storage_verification(extension_dir: Path, vulnerabilities:
     This minimal page is navigated to by the verifier whenever Chrome APIs need to be
     called from extension context (storage checks, seeding, data verification).
     Registered in web_accessible_resources so Chrome permits navigation to it.
-    """
-    (extension_dir / 'verify_storage.html').write_text(
-        '<!DOCTYPE html><html><body></body></html>', encoding='utf-8'
-    )
 
-    # Register verify_storage.html as web_accessible_resource so Chrome allows navigation.
+    The page carries STORAGE_PAGE_MARKER so navigation can confirm it reached the
+    page the verifier wrote rather than some other chrome-extension:// origin.
+    """
+    (extension_dir / STORAGE_PAGE_FILENAME).write_text(STORAGE_PAGE_HTML, encoding='utf-8')
+
+    # Register the page as web_accessible_resource so Chrome allows navigation.
     manifest_path = extension_dir / 'manifest.json'
     if not manifest_path.exists():
         return
@@ -133,12 +135,12 @@ def prepare_extension_storage_verification(extension_dir: Path, vulnerabilities:
 
         if manifest_version >= 3:
             # MV3: web_accessible_resources is an array of objects
-            entry = {"resources": ["verify_storage.html"], "matches": ["<all_urls>"]}
+            entry = {"resources": [STORAGE_PAGE_FILENAME], "matches": ["<all_urls>"]}
             if "web_accessible_resources" not in manifest:
                 manifest["web_accessible_resources"] = [entry]
             else:
                 already_listed = any(
-                    isinstance(r, dict) and "verify_storage.html" in r.get("resources", [])
+                    isinstance(r, dict) and STORAGE_PAGE_FILENAME in r.get("resources", [])
                     for r in manifest["web_accessible_resources"]
                 )
                 if not already_listed:
@@ -146,11 +148,11 @@ def prepare_extension_storage_verification(extension_dir: Path, vulnerabilities:
         else:
             # MV2: web_accessible_resources is a flat array of strings
             if "web_accessible_resources" not in manifest:
-                manifest["web_accessible_resources"] = ["verify_storage.html"]
-            elif "verify_storage.html" not in manifest["web_accessible_resources"]:
-                manifest["web_accessible_resources"].append("verify_storage.html")
+                manifest["web_accessible_resources"] = [STORAGE_PAGE_FILENAME]
+            elif STORAGE_PAGE_FILENAME not in manifest["web_accessible_resources"]:
+                manifest["web_accessible_resources"].append(STORAGE_PAGE_FILENAME)
 
         with open(manifest_path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=2)
     except Exception as e:
-        log_error(f"Failed to register verify_storage.html in manifest: {e}")
+        log_error(f"Failed to register {STORAGE_PAGE_FILENAME} in manifest: {e}")

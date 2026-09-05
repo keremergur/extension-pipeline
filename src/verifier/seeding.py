@@ -10,6 +10,24 @@ from .constants import (
 )
 
 
+def _preview(value, limit: int = 100) -> str:
+    """Truncated, always-sliceable rendering of a value for log output.
+
+    Exfiltrated values come from JSHandle.json_value(), so they can be dicts or
+    lists, not just strings. Slicing those directly raises (on Python 3.12 a dict
+    lookup with a slice key), which previously turned a normal "data did not match"
+    log line into a "Data verification failed" exception and hid the mismatch.
+    """
+    if value is None:
+        return "None"
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value)
+        except Exception:
+            value = str(value)
+    return value[:limit] + "..." if len(value) > limit else value
+
+
 async def seed_test_data(page, vulnerability_category: str, verification_details: Optional[Dict], extension_id: Optional[str], extension_path: Optional[str]) -> bool:
     """
     Seed test data for verification.
@@ -370,8 +388,8 @@ async def verify_exfiltrated_data(
                 return True
             else:
                 log_error(f"✗ Exfiltrated data NOT in browser data")
-                log_error(f"  Exfiltrated: {exfiltrated_data[:100]}...")
-                log_error(f"  Actual: {actual_data[:100] if actual_data else 'None'}...")
+                log_error(f"  Exfiltrated: {_preview(exfiltrated_data)}")
+                log_error(f"  Actual: {_preview(actual_data)}")
                 return False
         else:
             log_error("No actual data retrieved from browser")
