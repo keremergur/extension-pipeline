@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from typing import Dict, Optional
@@ -214,6 +215,40 @@ async def check_web_storage(page, storage_api: str, storage_key: Optional[str], 
         return False
 
     storage_type = "localStorage" if "localStorage" in storage_api else "sessionStorage"
+
+    # sessionStorage is per-page/per-context: the freshly-navigated read context always sees it
+    # empty, so a "cleared" (length==0) or "removed" (getItem==null) result cannot be distinguished
+    # from "never written" -- that is a false positive under a no-op payload (caught by the no-op
+    # control). The seed-then-navigate flow can't persist a canary across contexts for sessionStorage,
+    # so we cannot verify sessionStorage clear/remove and must report no detection rather than guess.
+    if storage_type == "sessionStorage" and (is_clear_api or is_remove_api):
+        if diagnostics is not None:
+            diagnostics["storage_unverifiable"] = "sessionStorage_clear_remove_not_persistable"
+        log_info("sessionStorage clear/remove cannot be verified (per-page storage) - reporting no detection")
+        return False
+
+    # Content-script web storage lives on the PAGE origin (e.g. example.com), NOT the
+    # chrome-extension:// origin. Read it there first (gated by WEB_STORAGE_PAGE_ORIGIN).
+    # Precision-safe: a no-op payload writes nothing, so no marker can appear at the page origin.
+    _page_origin = (os.getenv("WEB_STORAGE_PAGE_ORIGIN") or "false").strip().lower() in ("1", "true", "yes", "on")
+    if _page_origin and storage_key and not is_clear_api and not is_remove_api:
+        try:
+            # page.evaluate has NO default timeout; a hostile page (infinite loop / overridden
+            # localStorage getter) would hang forever. Bound it so it can never stall the pipeline.
+            pv = await asyncio.wait_for(
+                page.evaluate(
+                    "(k) => { try { return %s.getItem(k); } catch (e) { return null; } }" % storage_type,
+                    storage_key,
+                ),
+                timeout=5,
+            )
+        except Exception:
+            pv = None
+        if _value_matches_marker(pv):
+            if diagnostics is not None:
+                diagnostics["web_storage_page_origin_hit"] = True
+                diagnostics["storage_key_present"] = True
+            return True
 
     if not extension_id:
         log_error(f"Extension ID required for extension {storage_type}")
@@ -478,11 +513,6 @@ async def check_management(page, storage_api: str, storage_key: Optional[str], e
     Data Exfiltration APIs:
     - chrome.management.get/getAll/getSelf: Handled by seed_test_data + console detection
     """
-    if 'setEnabled' in storage_api:
-        # Skipped per user requirement
-        log_info("chrome.management.setEnabled verification skipped")
-        return False
-
     if not extension_id or not extension_path:
         log_error("Extension ID and path required for management API")
         return False
@@ -518,6 +548,23 @@ async def check_management(page, storage_api: str, storage_key: Optional[str], e
                         chrome.management.get('{storage_key}', info => {{
                             // If error, extension doesn't exist (was uninstalled)
                             resolve(chrome.runtime.lastError !== undefined);
+                        }});
+                    }})
+                """)
+        elif 'setEnabled' in storage_api:
+            # storage_key is the target extension id the payload tried to disable/enable.
+            # Verify a real state change: the target now reports enabled === false (disabled).
+            # Precision-safe: a no-op payload changes nothing, so an unchanged/absent target never
+            # reports disabled. Detection is inherently limited to targets that are actually
+            # installed in the test browser (like download, this API can be covered but rarely fires).
+            if not storage_key:
+                result = False
+            else:
+                result = await extension_page.evaluate(f"""
+                    () => new Promise(resolve => {{
+                        chrome.management.get('{storage_key}', info => {{
+                            if (chrome.runtime.lastError || !info) return resolve(false);
+                            resolve(info.enabled === false);
                         }});
                     }})
                 """)

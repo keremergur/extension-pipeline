@@ -1,10 +1,12 @@
 import asyncio
+import os
 from typing import Dict, Optional
 import config
 from .logging_utils import log_error, log_info, log_success
 from .constants import SKIPPED_APIS
 from .seeding import seed_test_data, verify_exfiltrated_data
 from .storage_checks import check_storage_modified
+from .navigation import navigate_to_extension_context
 
 
 def derive_failure_reason(vulnerability_category: Optional[str], detection: Optional[str],
@@ -397,18 +399,69 @@ async def execute_payload_and_detect(
                 log_error(f"Storage vulnerability missing required field: storage_api")
                 detection = None
             else:
-                # Give storage operation time to complete
-                await asyncio.sleep(0.5)
-
+                # Give the storage write time to land. By default this is a single settle + one read
+                # (original behaviour). With STORAGE_POLL enabled, keep re-reading up to the payload
+                # budget so an async handler that writes >0.5s after the message is still caught.
+                # Precision-safe either way: a no-op payload never writes, so no amount of polling can
+                # manufacture a hit. The flag lets the single-shot baseline be reproduced exactly (A/B).
                 log_info(f"Checking storage: key='{storage_key}' using {storage_api}" + (f" for domain {storage_domain}" if storage_domain else ""))
+                _poll = (os.getenv("STORAGE_POLL") or "false").strip().lower() in ("1", "true", "yes", "on")
+                await asyncio.sleep(0.5)
                 storage_modified = await check_storage_modified(page, storage_api, storage_key, extension_id=extension_id, storage_domain=storage_domain, extension_path=extension_path, diagnostics=diagnostics)
-                if storage_modified:
-                    detection = "storage"
-                else:
-                    detection = None
+                if _poll and not storage_modified:
+                    _budget = float(getattr(config, "PAYLOAD_EXECUTION_TIMEOUT", 3) or 3)
+                    _interval = float(os.getenv("STORAGE_POLL_INTERVAL") or "0.2")
+                    _loop = asyncio.get_event_loop()
+                    _deadline = _loop.time() + _budget
+                    while not storage_modified and _loop.time() < _deadline:
+                        await asyncio.sleep(_interval)
+                        storage_modified = await check_storage_modified(page, storage_api, storage_key, extension_id=extension_id, storage_domain=storage_domain, extension_path=extension_path, diagnostics=diagnostics)
+                    if diagnostics is not None:
+                        diagnostics["storage_polled"] = True
+                detection = "storage" if storage_modified else None
         else:
             # Wait for detection task to complete
             detection = await detection_task
+            # Download outcome check (gated by VERIFY_DOWNLOADS). chrome.downloads.download bypasses
+            # page-level request attribution, so the network/on_download paths miss it; instead confirm
+            # the OUTCOME via chrome.downloads.search. Match only our mock host or an exploit marker, so
+            # a benign download can't match and a no-op payload (no download) yields nothing.
+            _dl_mode = (os.getenv("VERIFY_DOWNLOADS") or "false").strip().lower()
+            if (detection is None and vulnerability_category == "download"
+                    and _dl_mode in ("1", "true", "yes", "on", "any")
+                    and extension_id):
+                _dl_any = _dl_mode == "any"  # "any": count any download record (precision guarded by no-op)
+                dl_page = await page.context.new_page()
+                try:
+                    if await navigate_to_extension_context(dl_page, extension_id):
+                        _loop = asyncio.get_event_loop()
+                        _deadline = _loop.time() + 3.0
+                        while _loop.time() < _deadline:
+                            hits = await asyncio.wait_for(dl_page.evaluate("""
+                                (anyMatch) => new Promise(resolve => {
+                                    try {
+                                        if (!chrome.downloads || !chrome.downloads.search) return resolve(0);
+                                        chrome.downloads.search({}, items => {
+                                            const m = (items||[]).filter(d => {
+                                                if (anyMatch) return true;
+                                                const s = ((d.url||'')+' '+(d.finalUrl||'')+' '+(d.filename||'')).toLowerCase();
+                                                return s.includes('127.0.0.1:3000') || s.includes('exploit');
+                                            });
+                                            resolve(m.length);
+                                        });
+                                    } catch(e) { resolve(0); }
+                                })
+                            """, _dl_any), timeout=5)
+                            if hits and hits > 0:
+                                detection = "download"
+                                if diagnostics is not None:
+                                    diagnostics["download_record_found"] = True
+                                break
+                            await asyncio.sleep(0.2)
+                except Exception as e:
+                    log_error(f"Download outcome check: {e}")
+                finally:
+                    await dl_page.close()
 
     except Exception as e:
         log_error(f"Payload execution: {e}")

@@ -15,9 +15,8 @@ extension_code_bkp/
 
 env/
 
-# Internal planning / assistant-generated notes — not part of the deliverable
+# Internal / local notes — not part of the deliverable
 PLAN.md
-CHANGELOG.md
 SERVER_SETUP.md
 METHODOLOGY.md
 review_pack_local.txt
@@ -33,3 +32,6 @@ src/benchmark/benchmark_result.json
 
 # Reference material (large binary, not source)
 src/Zacharias.pdf
+
+# Internal demo scripts (not part of the deliverable)
+demos/

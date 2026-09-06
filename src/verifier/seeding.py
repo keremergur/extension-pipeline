@@ -1,4 +1,6 @@
+import asyncio
 import json
+import os
 from typing import Dict, Optional
 import config
 from .logging_utils import log_error, log_info, log_success
@@ -186,6 +188,22 @@ async def seed_test_data(page, vulnerability_category: str, verification_details
             if not storage_key:
                 storage_key = "testKey"
 
+            # Also seed the PAGE origin (where content scripts read/write web storage). Gated by
+            # WEB_STORAGE_PAGE_ORIGIN; precision-safe (seeded data is only confirmed against a real
+            # exfiltration, and a no-op payload exfiltrates nothing).
+            if (os.getenv("WEB_STORAGE_PAGE_ORIGIN") or "false").strip().lower() in ("1", "true", "yes", "on"):
+                try:
+                    await asyncio.wait_for(
+                        page.evaluate(
+                            "(k) => { try { %s.setItem(k, 'exploit'); return true; } catch (e) { return false; } }" % storage_type,
+                            storage_key,
+                        ),
+                        timeout=5,
+                    )
+                    log_info(f"Seeded {storage_type} key '{storage_key}' at page origin")
+                except Exception:
+                    pass
+
             success = await extension_page.evaluate(f"""
                 () => {{
                     try {{
@@ -335,6 +353,20 @@ async def verify_exfiltrated_data(
                     }}
                 }}
             """)
+            # Also include the PAGE origin, where content-script web storage actually lives. Gated.
+            if (os.getenv("WEB_STORAGE_PAGE_ORIGIN") or "false").strip().lower() in ("1", "true", "yes", "on"):
+                try:
+                    page_data = await asyncio.wait_for(
+                        page.evaluate(
+                            "() => { try { const o = {}; for (let i=0;i<%s.length;i++){ const k=%s.key(i); o[k]=%s.getItem(k);} return JSON.stringify(o);} catch(e){ return null; } }"
+                            % (storage_type, storage_type, storage_type)
+                        ),
+                        timeout=5,
+                    )
+                    if page_data:
+                        actual_data = (actual_data or "") + page_data
+                except Exception:
+                    pass
 
         await extension_page.close()
 
