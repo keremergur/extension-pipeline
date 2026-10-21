@@ -7,3 +7,4 @@ google-genai>=0.3.0
 playwright>=1.40.0
 flask>=2.3.0
 jsbeautifier>=1.14.0
+cryptography>=42.0.0  # domain_spoofing.py: self-signed cert for the HTTPS origin server (Phase 2)

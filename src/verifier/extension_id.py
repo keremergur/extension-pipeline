@@ -1,8 +1,5 @@
 import re
-import os
 import asyncio
-import hashlib
-from pathlib import Path
 from typing import List, Optional
 from .logging_utils import log_error, log_info, log_success
 
@@ -46,62 +43,6 @@ def _iter_context_urls(context) -> List[str]:
             except Exception:
                 continue
     return urls
-
-
-def peek_runtime_extension_ids(context) -> List[str]:
-    """Return the extension IDs currently visible in a context, without waiting.
-
-    Unlike discover_runtime_extension_id_from_context() this never polls: it is a
-    snapshot of what already exists, used to cross-check a computed ID and to feed
-    ID recovery after a failed extension-context navigation.
-    """
-    ids: List[str] = []
-    for url in _iter_context_urls(context):
-        extension_id = _extract_extension_id_from_url(url)
-        if extension_id and extension_id not in ids:
-            ids.append(extension_id)
-    return ids
-
-
-def compute_unpacked_extension_id(extension_dir) -> Optional[str]:
-    """Compute the ID Chrome assigns to an unpacked extension loaded from `extension_dir`.
-
-    Reimplements crx_file::id_util::GenerateIdForPath():
-      SHA256(<absolute path bytes>) -> first 16 bytes -> hex -> each hex digit
-      mapped to 'a' + value (so '0'->'a' ... 'f'->'p'), giving a 32-char ID.
-
-    Chrome hashes the path *after* base::MakeAbsoluteFilePath(), which on POSIX is
-    realpath(): symlinks resolved, '..' collapsed, trailing separators stripped —
-    hence os.path.realpath() here. Path bytes are the platform's native encoding
-    for base::FilePath::CharType (UTF-8 on POSIX, UTF-16LE on Windows, where the
-    drive letter is also upper-cased by MaybeNormalizePath).
-
-    Only valid for extensions WITHOUT a 'key' in manifest.json — with a key the ID
-    is derived from that key instead (see has_fixed_extension_id()).
-
-    Returns None if the path cannot be resolved.
-    """
-    try:
-        real_path = os.path.realpath(str(Path(extension_dir)))
-        if os.name == "nt":
-            # MaybeNormalizePath(): upper-case the drive letter so the hash matches
-            # regardless of how the path was spelled on the command line.
-            if len(real_path) >= 2 and real_path[1] == ":":
-                real_path = real_path[0].upper() + real_path[1:]
-            path_bytes = real_path.encode("utf-16-le")
-        else:
-            path_bytes = real_path.encode("utf-8")
-
-        digest = hashlib.sha256(path_bytes).digest()[:16]
-        extension_id = "".join(
-            chr(ord("a") + nibble)
-            for byte in digest
-            for nibble in (byte >> 4, byte & 0x0F)
-        )
-        return extension_id if _is_valid_extension_id(extension_id) else None
-    except Exception as e:
-        log_error(f"Failed to compute unpacked extension ID for {extension_dir}: {e}")
-        return None
 
 
 async def discover_runtime_extension_id_from_context(

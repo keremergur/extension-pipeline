@@ -22,10 +22,26 @@ MANAGEMENT_APIS = {
 
 DNR_APIS = {'chrome.declarativeNetRequest.updateDynamicRules'}
 TOPSITES_APIS = {'chrome.topSites.get'}
-LOCALSTORAGE_APIS = {'localStorage.setItem', 'localStorage.getItem', 'localStorage.removeItem', 'localStorage.clear'}
+# Web-storage APIs (localStorage AND sessionStorage). sessionStorage.* was previously absent,
+# so those findings hit no routing branch and always missed; check_web_storage / seeding already
+# handle the sessionStorage case, they just needed to be routed here.
+LOCALSTORAGE_APIS = {
+    'localStorage.setItem', 'localStorage.getItem', 'localStorage.removeItem', 'localStorage.clear',
+    'sessionStorage.setItem', 'sessionStorage.getItem', 'sessionStorage.removeItem', 'sessionStorage.clear',
+}
 
-# APIs that are skipped during verification (not implemented yet)
-SKIPPED_APIS = {
+# APIs skipped during verification by default. Several now HAVE working handlers
+# (check_management uninstall/uninstallSelf, check_history deleteRange) or a working
+# data-exfiltration read path (verify_exfiltrated_data covers management/topSites/history
+# reads), so they are only skipped for backward-compatibility with the thesis baseline.
+# EXTRA_VERIFY_APIS lets a run enable them without a code change:
+#   unset/empty        -> skip all of the below (baseline behaviour, unchanged)
+#   "all"              -> skip nothing (attempt every API; precision is still guarded by the
+#                         marker / no-op control, so an un-handled API just yields a miss, not an FP)
+#   "a,b,c"            -> remove exactly those APIs from the skip set
+import os as _os
+
+_DEFAULT_SKIPPED_APIS = {
     'chrome.history.deleteRange',
     'chrome.history.getVisits',
     'chrome.management.uninstall',
@@ -34,9 +50,15 @@ SKIPPED_APIS = {
     'chrome.management.get',
     'chrome.management.getAll',
     'chrome.management.getSelf',
-    'chrome.declarativeNetRequest.updateDynamicRules',
     'chrome.topSites.get'
 }
+_extra_verify = (_os.getenv("EXTRA_VERIFY_APIS") or "").strip()
+if _extra_verify.lower() == "all":
+    SKIPPED_APIS = set()
+elif _extra_verify:
+    SKIPPED_APIS = _DEFAULT_SKIPPED_APIS - {a.strip() for a in _extra_verify.split(",") if a.strip()}
+else:
+    SKIPPED_APIS = set(_DEFAULT_SKIPPED_APIS)
 CHROME_STORAGE_APIS = {
     'chrome.storage.local.set', 'chrome.storage.local.get', 'chrome.storage.local.remove', 'chrome.storage.local.clear',
     'chrome.storage.sync.set', 'chrome.storage.sync.get', 'chrome.storage.sync.remove', 'chrome.storage.sync.clear',
@@ -48,31 +70,8 @@ CHROME_STORAGE_APIS = {
 # Used both for Python membership checks and to build the equivalent JS condition.
 EXPLOIT_MARKERS = ("exploit", "123456789")
 
-# Categories whose detection reads the process-wide mock server (its request log
-# and the per-test token it hands out on reset). Verifications of these cannot run
-# concurrently -- they would reset and mis-attribute each other's state -- so
-# config.VERIFIER_PARALLEL keeps any extension containing one of them sequential.
-# Everything else (storage -> the extension's own chrome.storage; data_exfiltration
-# -> the [EXFIL] marker on its own page console) is independent per browser context.
-MOCK_SERVER_CATEGORIES = frozenset({
-    "1way_request", "2way_request", "code_execution", "download",
-})
-
 # Categories for which a retry after no detection is worthwhile (warm-up / timing issues)
 RETRY_CATEGORIES: set = set()  # Disabled: retries cost time without reliable benefit
-
-# Filename and marker of the page the verifier writes into every target extension to
-# get a chrome-extension:// context with Chrome API access. The marker lets ID
-# recovery tell "our page in the target extension" apart from an unrelated
-# chrome-extension:// origin (the verifier extension, a Chrome component extension,
-# or an extension that happens to ship a file of the same name).
-STORAGE_PAGE_FILENAME = "verify_storage.html"
-STORAGE_PAGE_MARKER = "chrome-ext-verifier-storage-page"
-STORAGE_PAGE_HTML = (
-    '<!DOCTYPE html><html><head>'
-    f'<meta name="verifier-storage-page" content="{STORAGE_PAGE_MARKER}">'
-    '</head><body></body></html>'
-)
 
 
 class Color:

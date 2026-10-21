@@ -1222,6 +1222,18 @@ RESUME_VERIFICATION_RUN = None
 # Increase if extensions are slow to process payloads.
 PAYLOAD_EXECUTION_TIMEOUT = _env_seconds("PAYLOAD_EXECUTION_TIMEOUT", 3)
 
+# Settle time after the attacker page loads, before the payload is injected — lets the extension load
+# and register its message listeners / wake its service worker. If it is still not listening when the
+# single payload fires, the message is lost (a systematic non-fire, distinct from run-to-run noise).
+# Exposed so the timing hypothesis for storage_key_absent / no_request can be measured (1s vs 3s).
+PAYLOAD_PRE_INJECT_SETTLE = _env_seconds("PAYLOAD_PRE_INJECT_SETTLE", 1)
+
+# After the payload is injected, synthetically click page controls / submit forms so that
+# interaction-gated vulnerabilities (which the thesis estimates at ~1/3 of unverified cases) can fire.
+# Precision-safe (a no-op payload installs no handler to trigger); default off pending measurement.
+SIMULATE_USER_INTERACTION = (os.getenv("SIMULATE_USER_INTERACTION") or "false").strip().lower() \
+    in ("1", "true", "yes", "on")
+
 # Wait for a page navigation (page.goto) to reach DOMContentLoaded.
 PAGE_NAVIGATION_TIMEOUT = _env_seconds("PAGE_NAVIGATION_TIMEOUT", 30)
 
@@ -1265,19 +1277,41 @@ PAGE_CLOSE_TIMEOUT = _env_seconds("PAGE_CLOSE_TIMEOUT", 5)
 # pure runtime discovery if a future Chrome ever changes the scheme.
 DETERMINISTIC_EXTENSION_ID = _env_bool("DETERMINISTIC_EXTENSION_ID", True)
 
-# Recover the extension ID when navigating to verify_storage.html fails.
-# On failure the verifier re-reads the live browser context for chrome-extension://
-# URLs and retries with those IDs, accepting a candidate only if the page it
-# serves carries the verifier's marker. Prevents "Could not navigate to extension
-# context" from aborting seeding when the ID in hand is wrong.
-EXTENSION_CONTEXT_ID_RECOVERY = _env_bool("EXTENSION_CONTEXT_ID_RECOVERY", True)
-
 # Browser headless mode used when launching Chrome for verification.
 # Accepted values (override via HEADLESS in .env):
 # - "false": visible browser window (default)
 # - "true":  classic headless mode
 # - "new":   Chrome's new headless mode
 HEADLESS = (os.getenv("HEADLESS") or "false").strip().lower()
+
+# ---------------------------------------------------------------------------
+# Verifier improvement effort. All env-overridable, backward compatible.
+# ---------------------------------------------------------------------------
+
+# Hard timeout for verifying a single extension (all its vulnerabilities). If exceeded, the
+# extension is recorded as an error/timeout instead of hanging the whole run — safety net for the
+# "silent hang" bug noted in the thesis. Set env to "none" to disable.
+PER_EXTENSION_TIMEOUT = _env_seconds("PER_EXTENSION_TIMEOUT", 180)
+
+# Capture a tail of the browser console log into each vulnerability result for offline debugging.
+CAPTURE_CONSOLE_LOGS = (os.getenv("CAPTURE_CONSOLE_LOGS") or "true").strip().lower() in ("1", "true", "yes", "on")
+MAX_CAPTURED_CONSOLE_LINES = _env_int_or_none("MAX_CAPTURED_CONSOLE_LINES", 40)
+
+# Domain spoofing (Phase 2) — the single biggest recall lever. 71.3% of TP vulnerabilities
+# are domain-restricted; without spoofing the verifier loads VERIFICATION_PAGE_URL and code-based
+# origin checks fail. When enabled, the verifier maps a vulnerability's specific_domain to a local
+# HTTPS origin server so the attacker page loads under the REAL origin.
+# Default OFF until validated on real domain-restricted extensions.
+ENABLE_DOMAIN_SPOOFING = (os.getenv("ENABLE_DOMAIN_SPOOFING") or "false").strip().lower() in ("1", "true", "yes", "on")
+DOMAIN_SPOOF_HTTPS_PORT = _env_int_or_none("DOMAIN_SPOOF_HTTPS_PORT", 3443)
+
+# Failure-artifact capture (Phase 1 debuggability). On a non-detection, dump a screenshot,
+# the rendered DOM, the executed payload and a debug.json under <run>/_debug_artifacts/ so a single
+# kuria run yields enough to diagnose offline without re-running. Capture is best-effort and can
+# never break or meaningfully slow a run.
+CAPTURE_FAILURE_ARTIFACTS = (os.getenv("CAPTURE_FAILURE_ARTIFACTS") or "true").strip().lower() in ("1", "true", "yes", "on")
+# Also capture artifacts for VERIFIED vulnerabilities (off by default — successes rarely need debugging).
+CAPTURE_ARTIFACTS_ON_SUCCESS = (os.getenv("CAPTURE_ARTIFACTS_ON_SUCCESS") or "false").strip().lower() in ("1", "true", "yes", "on")
 
 # DEBUG_MODE: Enable step-by-step verification with manual confirmation at each step
 # When enabled, browser will NOT auto-close after verification for manual inspection
@@ -1298,32 +1332,6 @@ DEBUG_SINGLE_RESULT_FILE = None #'chrome_bookmarks_search_result.json'
 # True: Prefer .crx file (download/extract fresh code, falls back to existing directory if .crx unavailable)
 # False: Prefer existing directory (skip re-extraction, falls back to .crx if directory missing)
 RESET_EXTENSION_CODE = True
-
-# ----------------------------------------------------------------------------
-# Verifier parallelism (storage / data_exfiltration only)
-# ----------------------------------------------------------------------------
-# Verify several extensions concurrently. Each verification already launches its
-# own Chrome with its own temporary profile, so sharing the Chrome binary is not a
-# problem -- but the MOCK SERVER is a process-wide singleton on the fixed port 3000
-# (that port is baked into the generated payloads, so it cannot be per-worker), and
-# every network detection calls reset_and_get_token(), which wipes its global
-# counters. Two concurrent network verifications would therefore clear each other's
-# in-flight state and mis-attribute requests -- silent false positives/negatives.
-#
-# So only extensions whose vulnerabilities are ALL detected without the mock server
-# run in parallel:
-#     parallel-safe : storage            (reads the extension's own chrome.storage)
-#                     data_exfiltration  ([EXFIL] on that page's own console)
-#     sequential    : 1way_request, 2way_request, code_execution, download
-# An extension with any mock-server category -- even mixed with safe ones -- is
-# verified sequentially, as is everything when DEBUG_MODE is on (it prompts for
-# input at each step). Env: VERIFIER_PARALLEL (default on)
-VERIFIER_PARALLEL = _env_bool("VERIFIER_PARALLEL", True)
-
-# How many parallel-safe extensions to verify at once. Each one is a separate
-# Chrome instance, so this is bounded by RAM/CPU rather than by the LLM server.
-# 1 disables parallelism just like VERIFIER_PARALLEL=false. Env: VERIFIER_PARALLEL_WORKERS
-VERIFIER_PARALLEL_WORKERS = int(_env_str("VERIFIER_PARALLEL_WORKERS", "4"))
 
 # ----------------------------------------------------------------------------
 # Verification page host (real example.com vs. local dummy server)

@@ -1,4 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
 
+# Editors
+.idea/
+*.swp
+
+# Secrets and local run configs (env/.env.fullrun is the one tracked config)
+.env
+env/*
+!env/.env.fullrun
+
+# Data, code and results (mounted or downloaded at run time)
 src/datasets/
 src/extension_code/
 src/codeql_reports/
@@ -6,12 +21,23 @@ src/results_analysis/
 src/results_analysis_bkp/
 src/results_verification/
 src/codeql_agent/
-__pycache__
-.env
-
-*.swp
 verifier_extensions/
 extension_code_bkp/
-
-env/
 .beautify_cache
+*.log
+
+# Internal / local notes, not part of the deliverable
+PLAN.md
+SERVER_SETUP.md
+METHODOLOGY.md
+review_pack_local.txt
+CLAUDE.md
+.claude/
+scratchpad/
+*.local.md
+
+# Reference material (large binary, not source)
+src/Zacharias.pdf
+
+# Internal demo scripts (not part of the deliverable)
+demos/
